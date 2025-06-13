@@ -1,9 +1,10 @@
 [package]
 name = "node_eeb"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
+base64ct = "1.8.0"
 tokio = { version = "1.0", features = ["full"] }
 libp2p = { version = "0.53", features = ["tcp", "mdns", "noise", "yamux", "gossipsub", "kad", "identify", "ping", "relay", "dcutr", "autonat", "tokio"] }
 serde = { version = "1.0", features = ["derive"] }
