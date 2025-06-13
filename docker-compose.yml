@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  p2p-node:
+    build: .
+    container_name: node-eeb-p2p
+    ports:
+      - "4001:4001"  
+    environment:
+      - RUST_LOG=info,libp2p=debug
+    command: [
+      "--port", "4001",
+      "--name", "VPS-Node",
+      "--bootstrap", "true",
+      "--dht", "true",
+      "--mdns", "false"  
+    ]
+    restart: unless-stopped
+    networks:
+      - p2p-network
+
+networks:
+  p2p-network:
+    driver: bridge
