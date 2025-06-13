@@ -76,7 +76,8 @@ impl P2PNode {
         // Set up transport with noise encryption and yamux multiplexing
         let transport = tcp::tokio::Transport::default()
             .upgrade(libp2p::core::upgrade::Version::V1)
-            .authenticate(noise::Config::new(&local_key)?)
+            .authenticate(noise::Config::new(&local_key)
+                .map_err(|e| anyhow!("Failed to create noise config: {}", e))?)
             .multiplex(yamux::Config::default())
             .boxed();
 
@@ -96,11 +97,12 @@ impl P2PNode {
         let gossipsub = gossipsub::Behaviour::new(
             MessageAuthenticity::Signed(local_key.clone()),
             gossipsub_config,
-        )?;
+        ).map_err(|e| anyhow!("Failed to create gossipsub: {}", e))?;
 
         // Create mDNS behaviour for local network discovery
         let mdns = if enable_mdns {
-            mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)?
+            mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)
+                .map_err(|e| anyhow!("Failed to create mDNS: {}", e))?
         } else {
             mdns::tokio::Behaviour::new(
                 mdns::Config {
@@ -108,7 +110,7 @@ impl P2PNode {
                     ..Default::default()
                 },
                 local_peer_id,
-            )?
+            ).map_err(|e| anyhow!("Failed to create mDNS: {}", e))?
         };
 
         // Create Kademlia DHT for peer discovery
@@ -180,7 +182,8 @@ impl P2PNode {
             "/ip4/0.0.0.0/tcp/0".to_string()
         };
 
-        swarm.listen_on(listen_addr.parse()?)?;
+        swarm.listen_on(listen_addr.parse()
+            .map_err(|e| anyhow!("Failed to parse listen address: {}", e))?)?;
 
         // Subscribe to handshake topic
         let handshake_topic = IdentTopic::new(HANDSHAKE_TOPIC);
@@ -248,12 +251,16 @@ impl P2PNode {
                                 info!("🔍 NAT status changed from {:?} to {:?}", old, new);
                             }
                             
-                            SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::InitiatedDirectConnectionUpgrade { remote_peer_id, local_relayed_addr })) => {
-                                info!("🔄 Initiated direct connection upgrade to {}", remote_peer_id);
-                            }
-                            
-                            SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::DirectConnectionUpgradeSucceeded { remote_peer_id })) => {
-                                info!("✅ Direct connection upgrade succeeded with {}", remote_peer_id);
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(event)) => {
+                                match event {
+                                    dcutr::Event::InitiatedDirectConnectionUpgrade { remote_peer_id, local_relayed_addr } => {
+                                        info!("🔄 Initiated direct connection upgrade to {}", remote_peer_id);
+                                    }
+                                    dcutr::Event::DirectConnectionUpgradeSucceeded { remote_peer_id } => {
+                                        info!("✅ Direct connection upgrade succeeded with {}", remote_peer_id);
+                                    }
+                                    _ => {}
+                                }
                             }
                             
                             SwarmEvent::Behaviour(P2PBehaviourEvent::Relay(relay::Event::ReservationReqAccepted { src_peer_id, .. })) => {
@@ -325,20 +332,13 @@ impl P2PNode {
                                 }
                             }
                             
-                            SwarmEvent::Behaviour(P2PBehaviourEvent::Ping(ping::Event {
-                                peer,
-                                result,
-                                ..
-                            })) => {
-                                match result {
-                                    Ok(ping::Event::Ping { rtt }) => {
-                                        debug!("🏓 Ping to {} successful: {:?}", peer, rtt);
-                                    }
-                                    Ok(ping::Event::Pong) => {
-                                        debug!("🏓 Pong from {}", peer);
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Ping(event)) => {
+                                match event.result {
+                                    Ok(rtt) => {
+                                        debug!("🏓 Ping to {} successful: {:?}", event.peer, rtt);
                                     }
                                     Err(e) => {
-                                        debug!("🏓 Ping to {} failed: {}", peer, e);
+                                        debug!("🏓 Ping to {} failed: {}", event.peer, e);
                                     }
                                 }
                             }
