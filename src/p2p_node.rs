@@ -128,7 +128,8 @@ impl P2PNode {
             for addr in BOOTSTRAP_NODES {
                 if let Ok(multiaddr) = addr.parse::<Multiaddr>() {
                     if let Some(Protocol::P2p(peer_id)) = multiaddr.iter().last() {
-                        if let Ok(peer_id) = peer_id.try_into() {
+                        let peer_id = peer_id.try_into();
+                        if let Ok(peer_id) = peer_id {
                             kademlia.add_address(&peer_id, multiaddr);
                             info!("🌐 Added bootstrap node: {}", peer_id);
                         }
@@ -253,13 +254,18 @@ impl P2PNode {
                             
                             SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(event)) => {
                                 match event {
-                                    dcutr::Event::InitiatedDirectConnectionUpgrade { remote_peer_id, local_relayed_addr } => {
+                                    dcutr::Event::InitiatedDirectConnectionUpgrade { remote_peer_id, .. } => {
                                         info!("🔄 Initiated direct connection upgrade to {}", remote_peer_id);
+                                    }
+                                    dcutr::Event::RemoteInitiatedDirectConnectionUpgrade { remote_peer_id, .. } => {
+                                        info!("🔄 Remote initiated direct connection upgrade from {}", remote_peer_id);
                                     }
                                     dcutr::Event::DirectConnectionUpgradeSucceeded { remote_peer_id } => {
                                         info!("✅ Direct connection upgrade succeeded with {}", remote_peer_id);
                                     }
-                                    _ => {}
+                                    dcutr::Event::DirectConnectionUpgradeFailed { remote_peer_id, error } => {
+                                        warn!("❌ Direct connection upgrade failed with {}: {}", remote_peer_id, error);
+                                    }
                                 }
                             }
                             
