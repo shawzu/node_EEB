@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use libp2p::{
     autonat,
     dcutr,
-    gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode},
+    gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode, MessageId},
     identify,
     kad::{self, store::MemoryStore},
     mdns,
@@ -11,7 +11,7 @@ use libp2p::{
     ping,
     relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
+    tcp, yamux, Multiaddr, PeerId, Swarm, Transport, StreamProtocol,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -19,8 +19,9 @@ use std::{
     hash::{Hash, Hasher},
     time::Duration,
 };
-use tokio::{io, select, time::interval};
+use tokio::{select, time::interval};
 use tracing::{debug, error, info, warn};
+use futures::StreamExt;
 
 const PROTOCOL_VERSION: &str = "/node-eeb/1.0.0";
 const HANDSHAKE_TOPIC: &str = "node-eeb-handshakes";
@@ -86,7 +87,7 @@ impl P2PNode {
             .message_id_fn(|message| {
                 let mut hasher = DefaultHasher::new();
                 message.data.hash(&mut hasher);
-                hasher.finish().to_string()
+                MessageId::from(hasher.finish().to_string())
             })
             .build()
             .map_err(|e| anyhow!("Failed to build gossipsub config: {}", e))?;
@@ -154,7 +155,7 @@ impl P2PNode {
         ));
 
         // Create ping behaviour
-        let ping = ping::Behaviour::new(ping::Config::new().with_keep_alive(true));
+        let ping = ping::Behaviour::new(ping::Config::new());
 
         // Combine all behaviours
         let behaviour = P2PBehaviour {
@@ -169,7 +170,7 @@ impl P2PNode {
         };
 
         // Create swarm
-        let mut swarm = Swarm::with_tokio_executor(transport, behaviour, local_peer_id);
+        let mut swarm = Swarm::new(transport, behaviour, local_peer_id, libp2p::swarm::Config::default());
 
         // Listen on specified port or random port
         let listen_addr = if let Some(port) = port {
@@ -245,16 +246,16 @@ impl P2PNode {
                             info!("🔍 NAT status changed from {:?} to {:?}", old, new);
                         }
                         
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::InitiatedDirectConnectionUpgrade { .. })) => {
-                            info!("🔄 Initiated direct connection upgrade");
+                        SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::InitiatedDirectConnectionUpgrade { remote_peer_id, local_relayed_addr })) => {
+                            info!("🔄 Initiated direct connection upgrade to {}", remote_peer_id);
                         }
                         
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::DirectConnectionUpgradeSucceeded { .. })) => {
-                            info!("✅ Direct connection upgrade succeeded");
+                        SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::DirectConnectionUpgradeSucceeded { remote_peer_id })) => {
+                            info!("✅ Direct connection upgrade succeeded with {}", remote_peer_id);
                         }
                         
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Relay(relay::Event::ReservationReqAccepted { .. })) => {
-                            info!("🔗 Relay reservation accepted");
+                        SwarmEvent::Behaviour(P2PBehaviourEvent::Relay(relay::Event::ReservationReqAccepted { relay_peer_id, .. })) => {
+                            info!("🔗 Relay reservation accepted by {}", relay_peer_id);
                         }
                         SwarmEvent::Behaviour(P2PBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                             for (peer_id, multiaddr) in list {
@@ -299,17 +300,10 @@ impl P2PNode {
                         }
                         
                         SwarmEvent::Behaviour(P2PBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                            result: kad::QueryResult::Bootstrap(Ok(kad::BootstrapOk::Progress { .. })),
+                            result: kad::QueryResult::Bootstrap(Ok(kad::BootstrapOk { num_remaining, .. })),
                             ..
                         })) => {
-                            debug!("🔄 Kademlia bootstrap in progress");
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                            result: kad::QueryResult::Bootstrap(Ok(kad::BootstrapOk::Progress { remaining, .. })),
-                            ..
-                        })) => {
-                            info!("🌐 DHT bootstrap progress: {} queries remaining", remaining);
+                            info!("🌐 DHT bootstrap progress: {} queries remaining", num_remaining);
                         }
                         
                         SwarmEvent::Behaviour(P2PBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
@@ -330,6 +324,7 @@ impl P2PNode {
                         
                         SwarmEvent::Behaviour(P2PBehaviourEvent::Ping(ping::Event {
                             peer,
+                            connection,
                             result,
                         })) => {
                             match result {
