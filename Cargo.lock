@@ -2235,6 +2235,7 @@ name = "node_eeb"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64ct",
  "chrono",
  "clap",
  "libp2p",
