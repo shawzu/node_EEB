@@ -11,7 +11,7 @@ use libp2p::{
     ping,
     relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Swarm, Transport, StreamProtocol,
+    tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -169,8 +169,9 @@ impl P2PNode {
             autonat,
         };
 
-        // Create swarm
-        let mut swarm = Swarm::new(transport, behaviour, local_peer_id, libp2p::swarm::Config::default());
+        // Create swarm with proper config
+        let swarm_config = libp2p::swarm::Config::with_tokio_executor();
+        let mut swarm = Swarm::new(transport, behaviour, local_peer_id, swarm_config);
 
         // Listen on specified port or random port
         let listen_addr = if let Some(port) = port {
@@ -240,146 +241,149 @@ impl P2PNode {
         
         loop {
             select! {
-                event = self.swarm.select_next_some() => {
-                    match event {
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Autonat(autonat::Event::StatusChanged { old, new })) => {
-                            info!("🔍 NAT status changed from {:?} to {:?}", old, new);
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::InitiatedDirectConnectionUpgrade { remote_peer_id, local_relayed_addr })) => {
-                            info!("🔄 Initiated direct connection upgrade to {}", remote_peer_id);
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::DirectConnectionUpgradeSucceeded { remote_peer_id })) => {
-                            info!("✅ Direct connection upgrade succeeded with {}", remote_peer_id);
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Relay(relay::Event::ReservationReqAccepted { relay_peer_id, .. })) => {
-                            info!("🔗 Relay reservation accepted by {}", relay_peer_id);
-                        }
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                            for (peer_id, multiaddr) in list {
-                                info!("🔍 mDNS discovered peer: {} at {}", peer_id, multiaddr);
-                                
-                                // Add to Kademlia routing table
-                                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr.clone());
-                                
-                                // Try to connect
-                                if let Err(e) = self.swarm.dial(multiaddr.clone()) {
-                                    debug!("Failed to dial discovered peer {}: {}", peer_id, e);
-                                }
+                event = self.swarm.next() => {
+                    if let Some(event) = event {
+                        match event {
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Autonat(autonat::Event::StatusChanged { old, new })) => {
+                                info!("🔍 NAT status changed from {:?} to {:?}", old, new);
                             }
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                            for (peer_id, multiaddr) in list {
-                                debug!("📤 mDNS peer expired: {} at {}", peer_id, multiaddr);
-                            }
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                            propagation_source: peer_id,
-                            message,
-                            ..
-                        })) => {
-                            if message.topic == self.handshake_topic.hash() {
-                                self.handle_handshake_message(peer_id, &message.data).await;
-                            }
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Identify(identify::Event::Received {
-                            peer_id,
-                            info,
-                        })) => {
-                            info!("🆔 Identified peer: {} with protocol {}", peer_id, info.protocol_version);
                             
-                            // Add addresses to Kademlia
-                            for addr in info.listen_addrs {
-                                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::InitiatedDirectConnectionUpgrade { remote_peer_id, local_relayed_addr })) => {
+                                info!("🔄 Initiated direct connection upgrade to {}", remote_peer_id);
                             }
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                            result: kad::QueryResult::Bootstrap(Ok(kad::BootstrapOk { num_remaining, .. })),
-                            ..
-                        })) => {
-                            info!("🌐 DHT bootstrap progress: {} queries remaining", num_remaining);
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                            result: kad::QueryResult::GetClosestPeers(Ok(kad::GetClosestPeersOk { key, peers, .. })),
-                            ..
-                        })) => {
-                            info!("🔍 Found {} peers close to key", peers.len());
                             
-                            // Try to connect to discovered peers
-                            for peer in peers {
-                                if !self.swarm.is_connected(&peer) {
-                                    if let Err(e) = self.swarm.dial(peer) {
-                                        debug!("Failed to dial discovered peer {}: {}", peer, e);
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Dcutr(dcutr::Event::DirectConnectionUpgradeSucceeded { remote_peer_id })) => {
+                                info!("✅ Direct connection upgrade succeeded with {}", remote_peer_id);
+                            }
+                            
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Relay(relay::Event::ReservationReqAccepted { src_peer_id, .. })) => {
+                                info!("🔗 Relay reservation accepted by {}", src_peer_id);
+                            }
+                            
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                                for (peer_id, multiaddr) in list {
+                                    info!("🔍 mDNS discovered peer: {} at {}", peer_id, multiaddr);
+                                    
+                                    // Add to Kademlia routing table
+                                    self.swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr.clone());
+                                    
+                                    // Try to connect
+                                    if let Err(e) = self.swarm.dial(multiaddr.clone()) {
+                                        debug!("Failed to dial discovered peer {}: {}", peer_id, e);
                                     }
                                 }
                             }
-                        }
-                        
-                        SwarmEvent::Behaviour(P2PBehaviourEvent::Ping(ping::Event {
-                            peer,
-                            connection,
-                            result,
-                        })) => {
-                            match result {
-                                Ok(ping::Success::Ping { rtt }) => {
-                                    debug!("🏓 Ping to {} successful: {:?}", peer, rtt);
-                                }
-                                Ok(ping::Success::Pong) => {
-                                    debug!("🏓 Pong from {}", peer);
-                                }
-                                Err(e) => {
-                                    debug!("🏓 Ping to {} failed: {}", peer, e);
-                                }
-                            }
-                        }
-                        
-                        SwarmEvent::NewListenAddr { address, .. } => {
-                            let local_peer_id = *self.swarm.local_peer_id();
-                            info!("🎧 Listening on: {}/p2p/{}", address, local_peer_id);
                             
-                            // Bootstrap the DHT after we start listening
-                            if let Err(e) = self.swarm.behaviour_mut().kademlia.bootstrap() {
-                                debug!("Failed to bootstrap Kademlia: {}", e);
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                                for (peer_id, multiaddr) in list {
+                                    debug!("📤 mDNS peer expired: {} at {}", peer_id, multiaddr);
+                                }
                             }
                             
-                            // Start random walk to discover peers
-                            let random_peer_id = PeerId::random();
-                            self.swarm.behaviour_mut().kademlia.get_closest_peers(random_peer_id);
-                        }
-                        
-                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                            info!("🤝 Connected to peer: {}", peer_id);
-                            self.send_handshake_message(peer_id).await;
-                        }
-                        
-                        SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                            info!("👋 Disconnected from peer: {}", peer_id);
-                        }
-                        
-                        SwarmEvent::IncomingConnection { .. } => {
-                            debug!("📞 Incoming connection");
-                        }
-                        
-                        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                            if let Some(peer_id) = peer_id {
-                                warn!("❌ Outgoing connection error to {}: {}", peer_id, error);
-                            } else {
-                                warn!("❌ Outgoing connection error: {}", error);
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                                propagation_source: peer_id,
+                                message,
+                                ..
+                            })) => {
+                                if message.topic == self.handshake_topic.hash() {
+                                    self.handle_handshake_message(peer_id, &message.data).await;
+                                }
                             }
+                            
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Identify(identify::Event::Received {
+                                peer_id,
+                                info,
+                            })) => {
+                                info!("🆔 Identified peer: {} with protocol {}", peer_id, info.protocol_version);
+                                
+                                // Add addresses to Kademlia
+                                for addr in info.listen_addrs {
+                                    self.swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                                }
+                            }
+                            
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+                                result: kad::QueryResult::Bootstrap(Ok(kad::BootstrapOk { num_remaining, .. })),
+                                ..
+                            })) => {
+                                info!("🌐 DHT bootstrap progress: {} queries remaining", num_remaining);
+                            }
+                            
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+                                result: kad::QueryResult::GetClosestPeers(Ok(kad::GetClosestPeersOk { key, peers, .. })),
+                                ..
+                            })) => {
+                                info!("🔍 Found {} peers close to key", peers.len());
+                                
+                                // Try to connect to discovered peers
+                                for peer in peers {
+                                    if !self.swarm.is_connected(&peer) {
+                                        if let Err(e) = self.swarm.dial(peer) {
+                                            debug!("Failed to dial discovered peer {}: {}", peer, e);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            SwarmEvent::Behaviour(P2PBehaviourEvent::Ping(ping::Event {
+                                peer,
+                                result,
+                                ..
+                            })) => {
+                                match result {
+                                    Ok(ping::Event::Ping { rtt }) => {
+                                        debug!("🏓 Ping to {} successful: {:?}", peer, rtt);
+                                    }
+                                    Ok(ping::Event::Pong) => {
+                                        debug!("🏓 Pong from {}", peer);
+                                    }
+                                    Err(e) => {
+                                        debug!("🏓 Ping to {} failed: {}", peer, e);
+                                    }
+                                }
+                            }
+                            
+                            SwarmEvent::NewListenAddr { address, .. } => {
+                                let local_peer_id = *self.swarm.local_peer_id();
+                                info!("🎧 Listening on: {}/p2p/{}", address, local_peer_id);
+                                
+                                // Bootstrap the DHT after we start listening
+                                if let Err(e) = self.swarm.behaviour_mut().kademlia.bootstrap() {
+                                    debug!("Failed to bootstrap Kademlia: {}", e);
+                                }
+                                
+                                // Start random walk to discover peers
+                                let random_peer_id = PeerId::random();
+                                self.swarm.behaviour_mut().kademlia.get_closest_peers(random_peer_id);
+                            }
+                            
+                            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                                info!("🤝 Connected to peer: {}", peer_id);
+                                self.send_handshake_message(peer_id).await;
+                            }
+                            
+                            SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                                info!("👋 Disconnected from peer: {}", peer_id);
+                            }
+                            
+                            SwarmEvent::IncomingConnection { .. } => {
+                                debug!("📞 Incoming connection");
+                            }
+                            
+                            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                                if let Some(peer_id) = peer_id {
+                                    warn!("❌ Outgoing connection error to {}: {}", peer_id, error);
+                                } else {
+                                    warn!("❌ Outgoing connection error: {}", error);
+                                }
+                            }
+                            
+                            SwarmEvent::IncomingConnectionError { error, .. } => {
+                                warn!("❌ Incoming connection error: {}", error);
+                            }
+                            
+                            _ => {}
                         }
-                        
-                        SwarmEvent::IncomingConnectionError { error, .. } => {
-                            warn!("❌ Incoming connection error: {}", error);
-                        }
-                        
-                        _ => {}
                     }
                 }
                 

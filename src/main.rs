@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod p2p_node;
 
@@ -36,8 +36,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new("info,libp2p=debug"))
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::new("info,libp2p=debug"))
         .init();
     
     let args = Args::parse();
