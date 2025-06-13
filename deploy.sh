@@ -1,15 +1,12 @@
 #!/bin/bash
 
-
 set -e
-
 
 NODE_NAME="VPS-Node-$(hostname)"
 P2P_PORT=4001
 ENABLE_DHT=true
 ENABLE_BOOTSTRAP=true
 ENABLE_RELAY=false
-
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -43,7 +40,6 @@ check_port() {
     return 0
 }
 
-
 check_docker() {
     if ! command -v docker &> /dev/null; then
         print_error "Docker is not installed. Please install Docker first."
@@ -51,14 +47,24 @@ check_docker() {
         exit 1
     fi
     
-    if ! command -v docker-compose &> /dev/null; then
+    # Check for Docker Compose v2 (plugin) first, then v1 (standalone)
+    if docker compose version &> /dev/null; then
+        COMPOSE_CMD="docker compose"
+        print_info "Docker Compose v2 detected (plugin)"
+    elif command -v docker-compose &> /dev/null; then
+        COMPOSE_CMD="docker-compose"
+        print_info "Docker Compose v1 detected (standalone)"
+    else
         print_error "Docker Compose is not installed. Please install Docker Compose first."
-        echo "Installation guide: https://docs.docker.com/compose/install/"
+        echo "For Docker Compose v2 (recommended): https://docs.docker.com/compose/install/"
+        echo "Or install as plugin: sudo apt-get update && sudo apt-get install docker-compose-plugin"
         exit 1
     fi
+    
+    print_success "Using Docker Compose command: $COMPOSE_CMD"
 }
 
-
+# Set up firewall rules
 setup_firewall() {
     local port=$1
     
@@ -108,23 +114,23 @@ deploy() {
     check_docker
     
     print_info "Building Docker image..."
-    docker-compose build
+    $COMPOSE_CMD build
     
     print_info "Stopping existing containers..."
-    docker-compose down 2>/dev/null || true
+    $COMPOSE_CMD down 2>/dev/null || true
     
     setup_firewall $P2P_PORT
     
     print_info "Starting P2P node container..."
-    docker-compose up -d
+    $COMPOSE_CMD up -d
     
     sleep 5
     
-    if docker-compose ps | grep -q "Up"; then
+    if $COMPOSE_CMD ps | grep -q "Up"; then
         local public_ip=$(get_public_ip)
         print_success "P2P node deployed successfully!"
         print_info "Container status:"
-        docker-compose ps
+        $COMPOSE_CMD ps
         echo ""
         print_info "Node details:"
         echo "  - Node name: $NODE_NAME"
@@ -136,14 +142,14 @@ deploy() {
         echo "  ./node_eeb --connect /ip4/$public_ip/tcp/$P2P_PORT/p2p/[PEER_ID]"
         echo ""
         print_info "To view logs:"
-        echo "  docker-compose logs -f"
+        echo "  $COMPOSE_CMD logs -f"
         echo ""
         print_info "To stop the node:"
-        echo "  docker-compose down"
+        echo "  $COMPOSE_CMD down"
     else
         print_error "Failed to start P2P node container"
         print_info "Checking logs..."
-        docker-compose logs
+        $COMPOSE_CMD logs
         exit 1
     fi
 }
@@ -170,6 +176,7 @@ show_usage() {
     echo "  $0 --stop                            # Stop the node"
 }
 
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --name)
@@ -193,25 +200,29 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --logs)
-            docker-compose logs -f
+            check_docker
+            $COMPOSE_CMD logs -f
             exit 0
             ;;
         --stop)
+            check_docker
             print_info "Stopping P2P node..."
-            docker-compose down
+            $COMPOSE_CMD down
             print_success "P2P node stopped"
             exit 0
             ;;
         --restart)
+            check_docker
             print_info "Restarting P2P node..."
-            docker-compose down
-            docker-compose up -d
+            $COMPOSE_CMD down
+            $COMPOSE_CMD up -d
             print_success "P2P node restarted"
             exit 0
             ;;
         --status)
+            check_docker
             print_info "P2P node status:"
-            docker-compose ps
+            $COMPOSE_CMD ps
             exit 0
             ;;
         --help)
